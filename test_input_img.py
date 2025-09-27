@@ -10,7 +10,7 @@ register_all_modules()
 
 CFG = 'models/td-hm_hrnet-w48_8xb32-210e_coco-256x192.py'
 CKPT = 'models/td-hm_hrnet-w48_8xb32-210e_coco-256x192-0e67c616_20220913.pth'
-IMG  = 'media/demo.jpg'
+IMG  = 'media/demo1.jpg'
 
 device = "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
 print("Arch:", platform.machine(), "| Torch:", torch.__version__, "| Device:", device)
@@ -31,7 +31,7 @@ if result_generator:
     # print('results file: ', result_generator)
 
 # 4) visualize
-os.makedirs('outputs', exist_ok=True)
+os.makedirs('media/outputs', exist_ok=True)
 img = imread(IMG)  # BGR ndarray
 vis = VISUALIZERS.build(dict(type='PoseLocalVisualizer', name='pose_vis',
                              vis_backends=[dict(type='LocalVisBackend')]))
@@ -41,6 +41,6 @@ vis.add_datasample(
     image=img,
     data_sample=merge_data_samples(result_generator),
     draw_gt=False, draw_heatmap=False, draw_bbox=True,
-    show=False, out_file='outputs/pose_vis.jpg'
+    show=False, out_file='media/outputs/pose_vis.jpg'
 )
-print("Saved -> outputs/pose_vis.jpg")
+print("Saved -> media/outputs/pose_vis.jpg")
