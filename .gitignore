@@ -1,7 +1,2 @@
 .idea/
-
-rtmdet_nano_320-8xb32_coco-person.py
-rtmpose-l_8xb64-270e_coco-wholebody-256x192.py
-rtmpose-l_simcc-coco-wholebody_pt-aic-coco_270e-256x192-6f206314_20230124.pth
-td-hm_hrnet-w48_8xb32-210e_coco-256x192.py
-td-hm_hrnet-w48_8xb32-210e_coco-256x192-0e67c616_20220913.pth
+models/
