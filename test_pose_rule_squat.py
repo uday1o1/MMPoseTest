@@ -1,4 +1,5 @@
-import os, time, csv, argparse, math
+# squat_pose_halpe26_showviz_stable.py
+import os, csv, argparse, math
 import numpy as np
 import cv2
 from mmpose.apis import MMPoseInferencer
@@ -10,14 +11,25 @@ DET  = 'models/rtmdet_nano_320-8xb32_coco-person.py'
 DEVICE = 'cpu'
 
 # thresholds
-HIP_MIN, HIP_MAX = 60.0, 120.0          # avg hip angle window
-KNEEHIP_MAX = 0.20                      # |y_knee - y_hip| / body_height
-KNEE_TOE_MAX = 0.10                     # |x_knee - x_toe| / hip_width
+HIP_MIN, HIP_MAX = 60.0, 120.0
+KNEEHIP_MAX = 0.20
+KNEE_TOE_MAX = 0.10
 MIN_SCORE = 0.40
 
 # webcam
 CAM_DEFAULT = 0
 FRAME_W, FRAME_H = 960, 540
+
+# colors
+BANNER_OK = (0, 220, 0)
+BANNER_BAD = (0, 0, 255)
+TIP_COLOR  = (255, 255, 255)  # white
+TIP_SHADOW = (0, 0, 0)
+
+# rotation smoothing/clamp
+ROT_ALPHA = 0.2               # EMA factor
+ROT_MAX_ABS = 30.0            # clamp rotation to +/- degrees
+_rot_state = {'init': False, 'deg': 0.0}
 
 # Halpe-26 fallback
 HALPE26_NAMES = [
@@ -30,12 +42,13 @@ NAMES_READY = False
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--image', type=str, default=None, help='an image path; if set, webcam is skipped')
+    p.add_argument('--image', type=str, default=None, help='image path; if set, webcam is skipped')
     p.add_argument('--save', type=str, default='media/outputs/currentVis.jpg', help='output image path (auto-numbered)')
     p.add_argument('--csv', action='store_true', help='save CSV logs of keypoints')
     p.add_argument('--cam', type=int, default=CAM_DEFAULT, help='webcam index')
     p.add_argument('--width', type=int, default=FRAME_W, help='webcam width')
     p.add_argument('--height', type=int, default=FRAME_H, help='webcam height')
+    p.add_argument('--no_calib', action='store_true', help='disable foot-based roll calibration')
     return p.parse_args()
 
 # helpers
@@ -89,11 +102,15 @@ def resolve_halpe_canon(points):
         "HEAD": ("Head","head"),
         "HIP_C": ("Hip","hip","pelvis")
     }
-    resolved = {}
+    out = {}
     for key, cands in CANON.items():
         name = _pick_key(points, *cands)
-        if name: resolved[key] = name
-    return resolved
+        if name: out[key] = name
+    return out
+
+def _wrap_to_90(deg):
+    # treat foot line as orientation (ignore direction)
+    return ((deg + 90.0) % 180.0) - 90.0
 
 def foot_rotation_deg(points, canon):
     degs = []
@@ -102,9 +119,14 @@ def foot_rotation_deg(points, canon):
             h = points[canon[heel_key]]; t = points[canon[toe_key]]
             dx, dy = (t['x'] - h['x']), (t['y'] - h['y'])
             if abs(dx) + abs(dy) > 1e-6:
-                degs.append(math.degrees(math.atan2(dy, dx)))
+                ang = math.degrees(math.atan2(dy, dx))
+                degs.append(_wrap_to_90(ang))
     if not degs: return 0.0
-    return float(sum(degs)/len(degs))
+    # robust average
+    degs.sort()
+    mid = len(degs)//2
+    med = degs[mid] if len(degs)%2 else 0.5*(degs[mid-1]+degs[mid])
+    return float(med)
 
 def rotate_points(points, M):
     out = {}
@@ -185,8 +207,12 @@ def unique_save_path(path):
         if not os.path.exists(cand): return cand
         n += 1
 
+def put_text(img, text, org, scale, color, thick=2):
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, TIP_SHADOW, thick+2, cv2.LINE_AA)
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+
 def evaluate_and_draw(frame_bgr, out, csv_writer=None, do_calibrate=True):
-    # use MMPose’s visualization so keypoints + skeleton are shown
+    # keep mmpose keypoints/skeleton
     overlay = frame_bgr
     if out.get('visualization'):
         vis_rgb = out['visualization'][0]
@@ -195,8 +221,7 @@ def evaluate_and_draw(frame_bgr, out, csv_writer=None, do_calibrate=True):
     instances = extract_instances_from_output(out)
     best = pick_best_instance(instances)
     if best is None:
-        cv2.putText(overlay, "No person detected", (12, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.95, (0,0,255), 3)
+        put_text(overlay, "No person detected", (12, 42), 0.95, BANNER_BAD, 3)
         return overlay
 
     # points for rules
@@ -204,14 +229,22 @@ def evaluate_and_draw(frame_bgr, out, csv_writer=None, do_calibrate=True):
     points = label_points(KP_NAMES, kpts, scores, min_score=MIN_SCORE)
     canon = resolve_halpe_canon(points)
 
-    # camera roll calibration from feet
     H, W = overlay.shape[:2]
     rot_deg = 0.0
     if do_calibrate:
-        rot_deg = -foot_rotation_deg(points, canon)
+        raw = -foot_rotation_deg(points, canon)
+        # EMA smoothing + clamp
+        if _rot_state['init']:
+            rot_deg = (1.0-ROT_ALPHA)*_rot_state['deg'] + ROT_ALPHA*raw
+        else:
+            rot_deg = raw; _rot_state['init'] = True
+        rot_deg = max(-ROT_MAX_ABS, min(ROT_MAX_ABS, rot_deg))
+        if abs(rot_deg) < 0.5: rot_deg = 0.0
+        _rot_state['deg'] = rot_deg
+
         M = cv2.getRotationMatrix2D((W/2.0, H/2.0), rot_deg, 1.0)
         overlay = cv2.warpAffine(overlay, M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-        points = rotate_points(points, M)       # keep rules consistent after rotation
+        points = rotate_points(points, M)
         canon = resolve_halpe_canon(points)
 
     # Condition 1: avg hip angle
@@ -228,14 +261,14 @@ def evaluate_and_draw(frame_bgr, out, csv_writer=None, do_calibrate=True):
         y_an = 0.5*(points[canon["L_ANK"]]['y'] + points[canon["R_ANK"]]['y'])
         body_h = abs(y_an - y_sh) + 1e-6
 
-    # Condition 2: knee-hip vertical difference
+    # Condition 2
     dyL_n = dyR_n = None
     if all(k in canon for k in ("L_KNE","L_HIP")):
         dyL_n = abs(points[canon["L_KNE"]]['y'] - points[canon["L_HIP"]]['y']) / body_h
     if all(k in canon for k in ("R_KNE","R_HIP")):
         dyR_n = abs(points[canon["R_KNE"]]['y'] - points[canon["R_HIP"]]['y']) / body_h
 
-    # Condition 3: knee-toe lateral difference
+    # Condition 3
     L_toe = canon.get("L_BIGTOE") or canon.get("L_ANK")
     R_toe = canon.get("R_BIGTOE") or canon.get("R_ANK")
     dxL = dxR = None
@@ -249,12 +282,10 @@ def evaluate_and_draw(frame_bgr, out, csv_writer=None, do_calibrate=True):
     ok3 = (dxL is not None and dxR is not None and dxL <= KNEE_TOE_MAX and dxR <= KNEE_TOE_MAX)
     ok_all = ok1 and ok2 and ok3
 
-    # big status banner
-    color = (0,255,0) if ok_all else (0,0,255)
-    cv2.putText(overlay, "FORM OK" if ok_all else "FORM ISSUE",
-                (12, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.95, color, 3)
+    put_text(overlay, "FORM OK" if ok_all else "FORM ISSUE",
+             (12, 42), 0.95, BANNER_OK if ok_all else BANNER_BAD, 3)
 
-    # guidance lines
+    # tips (high-contrast)
     tips = []
     if hip_avg is not None:
         if hip_avg < HIP_MIN: tips.append("raise hips a bit")
@@ -264,28 +295,28 @@ def evaluate_and_draw(frame_bgr, out, csv_writer=None, do_calibrate=True):
     if (dxL is not None and dxR is not None) and (dxL > KNEE_TOE_MAX or dxR > KNEE_TOE_MAX):
         tips.append("knees behind toes")
 
-    y0 = 74
+    y0 = 76
     for g in tips[:3]:
-        cv2.putText(overlay, f"Tip: {g}", (12, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (50,255,255), 2)
-        y0 += 28
+        put_text(overlay, f"Tip: {g}", (12, y0), 0.85, TIP_COLOR, 2)
+        y0 += 30
 
     if csv_writer is not None:
-        ts = int(time.time() * 1000)
+        ts = int(cv2.getTickCount() / cv2.getTickFrequency() * 1000)
         for j, d in points.items():
             csv_writer.writerow([ts, 0, j, d['x'], d['y'], d['score']])
 
     return overlay
 
-def run_on_image(infer, img_path, save_path, save_csv):
+def run_on_image(infer, img_path, save_path, save_csv, do_calib=True):
     img = cv2.imread(img_path)
     if img is None: raise FileNotFoundError(f"cannot read image: {img_path}")
     out = next(infer(img, return_vis=True, return_datasamples=True, show=False))
-    overlay = evaluate_and_draw(img, out, None)
+    overlay = evaluate_and_draw(img, out, None, do_calibrate=do_calib)
     final_path = unique_save_path(save_path)
     cv2.imwrite(final_path, overlay)
     print(f"saved -> {final_path}")
 
-def run_on_webcam(infer, cam, width, height, save_csv):
+def run_on_webcam(infer, cam, width, height, save_csv, do_calib=True):
     csv_writer = None; csv_file = None
     if save_csv:
         os.makedirs('media/outputs', exist_ok=True)
@@ -305,8 +336,8 @@ def run_on_webcam(infer, cam, width, height, save_csv):
             ok, frame = cap.read()
             if not ok: break
             out = next(infer(frame, return_vis=True, return_datasamples=True, show=False))
-            overlay = evaluate_and_draw(frame, out, csv_writer)
-            cv2.imshow("press q to quit", overlay)
+            overlay = evaluate_and_draw(frame, out, csv_writer, do_calibrate=do_calib)
+            cv2.imshow("Squat Checker – q quits", overlay)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
     finally:
         cap.release(); cv2.destroyAllWindows()
@@ -315,8 +346,8 @@ def run_on_webcam(infer, cam, width, height, save_csv):
 if __name__ == "__main__":
     args = parse_args()
     infer = build_inferencer()
+    os.makedirs('media/outputs', exist_ok=True)
     if args.image:
-        os.makedirs('media/outputs', exist_ok=True)
-        run_on_image(infer, args.image, args.save, args.csv)
+        run_on_image(infer, args.image, args.save, args.csv, do_calib=not args.no_calib)
     else:
-        run_on_webcam(infer, args.cam, args.width, args.height, args.csv)
+        run_on_webcam(infer, args.cam, args.width, args.height, args.csv, do_calib=not args.no_calib)
