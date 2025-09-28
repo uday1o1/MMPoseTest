@@ -10,7 +10,7 @@ register_all_modules()
 
 CFG = 'models/td-hm_hrnet-w48_8xb32-210e_coco-256x192.py'
 CKPT = 'models/td-hm_hrnet-w48_8xb32-210e_coco-256x192-0e67c616_20220913.pth'
-IMG  = 'media/demo1.jpg'
+IMG  = 'media/mmpose_test.jpg'
 
 device = "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
 print("Arch:", platform.machine(), "| Torch:", torch.__version__, "| Device:", device)
