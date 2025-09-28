@@ -1,4 +1,3 @@
-# squat_pose_halpe26_showviz_stable.py
 import os, csv, argparse, math
 import numpy as np
 import cv2
