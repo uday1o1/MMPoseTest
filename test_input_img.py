@@ -31,7 +31,7 @@ if result_generator:
     # print('results file: ', result_generator)
 
 # 4) visualize
-os.makedirs('media/outputs', exist_ok=True)
+os.makedirs('media/output', exist_ok=True)
 img = imread(IMG)  # BGR ndarray
 vis = VISUALIZERS.build(dict(type='PoseLocalVisualizer', name='pose_vis',
                              vis_backends=[dict(type='LocalVisBackend')]))
@@ -41,6 +41,6 @@ vis.add_datasample(
     image=img,
     data_sample=merge_data_samples(result_generator),
     draw_gt=False, draw_heatmap=False, draw_bbox=True,
-    show=False, out_file='media/outputs/pose_vis.jpg'
+    show=False, out_file='media/output/pose_vis.jpg'
 )
-print("Saved -> media/outputs/pose_vis.jpg")
+print("Saved -> media/output/pose_vis.jpg")
