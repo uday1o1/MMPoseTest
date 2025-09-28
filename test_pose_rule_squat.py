@@ -385,13 +385,28 @@ def evaluate_and_draw(frame_bgr, out, csv_writer=None, do_calibrate=True, debug=
         y_an = 0.5*(points[canon["L_ANK"]]['y'] + points[canon["R_ANK"]]['y'])
         body_h = abs(y_an - y_sh) + 1e-6
 
-    # ---- Condition 2: |knee_y - hip_y| / body_h <= KNEEHIP_MAX ----
+    # ---- Condition 2 (femur-normalized): thigh ~ horizontal ----
     dyL_n = dyR_n = None
-    if _has_points("L_KNE","L_HIP"):
-        dyL_n = abs(points[canon["L_KNE"]]['y'] - points[canon["L_HIP"]]['y']) / body_h
-    if _has_points("R_KNE","R_HIP"):
-        dyR_n = abs(points[canon["R_KNE"]]['y'] - points[canon["R_HIP"]]['y']) / body_h
-    ok2 = (dyL_n is not None and dyR_n is not None and dyL_n <= KNEEHIP_MAX and dyR_n <= KNEEHIP_MAX)
+
+    # left side
+    if _has_points("L_KNE", "L_HIP"):
+        dx = points[canon["L_KNE"]]['x'] - points[canon["L_HIP"]]['x']
+        dy = points[canon["L_KNE"]]['y'] - points[canon["L_HIP"]]['y']
+        femur_len = (dx*dx + dy*dy) ** 0.5 + 1e-6
+        dyL_n = abs(dy) / femur_len
+
+    # right side
+    if _has_points("R_KNE", "R_HIP"):
+        dx = points[canon["R_KNE"]]['x'] - points[canon["R_HIP"]]['x']
+        dy = points[canon["R_KNE"]]['y'] - points[canon["R_HIP"]]['y']
+        femur_len = (dx*dx + dy*dy) ** 0.5 + 1e-6
+        dyR_n = abs(dy) / femur_len
+
+    ok2 = (
+        dyL_n is not None and dyR_n is not None
+        and dyL_n <= KNEEHIP_MAX and dyR_n <= KNEEHIP_MAX
+    )
+
 
     # ---- Condition 3 (directional): knee should NOT be AHEAD of toe by more than KNEE_TOE_MAX ----
     # get toe indices with safe fallback
